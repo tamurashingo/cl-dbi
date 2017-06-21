@@ -22,6 +22,25 @@
        ))
 ```
 
+or
+
+```common-lisp
+(defvar *connection*
+  (dbi:connect :mysql
+               :database-name "test"
+               :username "nobody"
+               :password "1234"))
+
+(let* ((query (dbi:prepare *connection*
+                           "SELECT * FROM somewhere WHERE flag = :flag OR updated_at > :update_date"
+                           :named-param T))
+       (result (dbi:execute query (:flag 0 :update_date "2011-11-01"))))
+  (loop for row = (dbi:fetch result)
+     while row
+     ;; process "row".
+       ))
+```
+
 ### Using `dbi:with-connection` to ensure connections are closed
 
 ```common-lisp
