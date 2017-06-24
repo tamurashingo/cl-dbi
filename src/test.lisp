@@ -15,7 +15,7 @@
 (defun run-driver-tests (driver-name &rest params)
   (let ((*db* (apply #'connect driver-name params))
         (*package* (find-package :dbi.test)))
-    (plan 6)
+    (plan 7)
     (unwind-protect
          (run-test-package :dbi.test)
       (disconnect *db*))))
@@ -86,3 +86,19 @@
              (error (e) e))
            '<dbi-database-error>)
   (do-sql *db* "INSERT INTO person (id, name) VALUES (5, 'mizuna')"))
+
+(deftest |named-parameter|
+  ;; do-sql
+  (is (do-sql/param *db* "INSERT INTO person (id, name) VALUES (6, 'taro')")
+      nil)
+  (is (do-sql/param *db* "INSERT INTO person (id, name) VALUES (:id, :name)"
+                    '(:name "jiro" :id 7))
+      nil)
+
+  ;; prepare, execute & fetch
+  (let (query result)
+    (setf query (prepare *db* "SELECT * FROM person WHERE id = :id" :named-param T))
+    (is-type query '<dbi-query>)
+    (setf result (execute query '(:id 6)))
+    (is (fetch result)
+        '(:|id| 6 :|name| "taro"))))

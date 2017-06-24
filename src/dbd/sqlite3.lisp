@@ -26,19 +26,24 @@
 (defclass <dbd-sqlite3-query> (<dbi-query>)
   (%first-result))
 
-(defmethod prepare ((conn <dbd-sqlite3-connection>) (sql string) &key)
-  (handler-case
-      (make-instance '<dbd-sqlite3-query>
-         :connection conn
-         :prepared (prepare-statement (connection-handle conn) sql))
-    (sqlite-error (e)
-      (if (eq (sqlite-error-code e) :error)
-          (error '<dbi-programming-error>
-                 :message (sqlite-error-message e)
-                 :error-code (sqlite-error-code e))
-          (error '<dbi-database-error>
-                 :message (sqlite-error-message e)
-                 :error-code (sqlite-error-code e))))))
+(defmethod prepare ((conn <dbd-sqlite3-connection>) (sql string) &key named-param)
+  (let* ((sql-obj (when named-param (parameterized-sql-parse sql)))
+         (sql (if named-param (getf sql-obj :sql) sql))
+         (params (when named-param (getf sql-obj :keys))))
+    (handler-case
+        (make-instance '<dbd-sqlite3-query>
+           :connection conn
+           :prepared (prepare-statement (connection-handle conn) sql)
+           :named-param named-param
+           :params params)
+      (sqlite-error (e)
+        (if (eq (sqlite-error-code e) :error)
+            (error '<dbi-programming-error>
+                   :message (sqlite-error-message e)
+                   :error-code (sqlite-error-code e))
+            (error '<dbi-database-error>
+                   :message (sqlite-error-message e)
+                   :error-code (sqlite-error-code e)))))))
 
 (defmethod execute-using-connection ((conn <dbd-sqlite3-connection>) (query <dbd-sqlite3-query>) params)
   (let ((prepared (query-prepared query)))
