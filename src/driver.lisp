@@ -82,47 +82,29 @@ Driver should be named like '<DBD-SOMETHING>' for a database 'something'."
            :accessor query-sql)
       (prepared :type t
                 :initarg :prepared
-                :accessor query-prepared)
-      (named-param :type boolean
-                   :initarg :named-param
-                   :initform nil
-                   :accessor query-named-param)
-      (params :type list
-              :initarg :params
-              :initform '()
-              :accessor query-params))
+                :accessor query-prepared))
   (:documentation "Class that represents a prepared DB query."))
 
 @export
 (defgeneric prepare (conn sql &key))
 
 @export
-(defmethod prepare ((conn <dbi-connection>) (sql string) &key (query-class '<dbi-query>) named-param)
+(defmethod prepare ((conn <dbi-connection>) (sql string) &key (query-class '<dbi-query>))
   "Preparing executing SQL statement and returns a instance of `<dbi-query>`.
 This method may be overrided by subclasses."
-  (let* ((sql-obj (when named-param (parameterized-sql-parse sql)))
-         (sql (if named-param (getf sql-obj :sql) sql))
-         (params (when named-param (getf sql-obj :keys))))
-
-    (make-instance query-class
-       :connection conn
-       :sql sql
-       :prepared (prepare-sql conn sql)
-       :named-param named-param
-       :params params)))
+  (make-instance query-class
+     :connection conn
+     :sql sql
+     :prepared (prepare-sql conn sql)))
 
 @export
 (defgeneric execute (query &rest params)
   (:documentation "Execute `query` with `params` and return the results.")
   (:method ((query <dbi-query>) &rest params)
-    (let ((p (if (query-named-param query)
-                 (loop for key in (query-params query)
-                       collect (getf (car params) key))
-                 params)))
-      (execute-using-connection
-       (query-connection query)
-       query
-       p))))
+    (execute-using-connection
+     (query-connection query)
+     query
+     params)))
 
 @export
 (defgeneric fetch (query)
@@ -151,18 +133,6 @@ This method may be overrided by subclasses.")
   (:method ((conn <dbi-connection>) (sql string) &rest params)
     (apply #'execute (prepare conn sql) params)
     (values)))
-
-@export
-(defgeneric do-sql/param (conn sql &rest params)
-  (:documentation "Do preparation and execution at once.
-Params should be property list.
-This method may be overrided by subclasses.")
-  (:method ((conn <dbi-connection>) (sql string) &rest params)
-    (let* ((sql-obj (parameterized-sql-parse sql))
-           (sql (getf sql-obj :sql))
-           (params (loop for key in (getf sql-obj :keys)
-                         collect (getf (car params) key))))
-      (apply #'do-sql conn sql params))))
 
 @export
 (defgeneric execute-using-connection (conn query params)
@@ -287,54 +257,3 @@ For example, in case of MySQL and PostgreSQL, backslashes must be escaped by dou
                                 part)
                             out))))
               sql))))))
-
-@export
-(defun parameterized-sql-parse (sql)
-  (let* ((params nil)
-         (sql (with-output-to-string (s)
-                (loop with colon = NIL
-                      with quoted = NIL
-                      with prev = #\Space
-                      with param = '()
-                      for c across sql
-                      if (and (not colon) (not quoted))
-                        if (char= c #\:)
-                            do (setf colon T)
-                        else
-                          do (write-char c s)
-                          and when (char= c #\')
-                                do (setf quoted T)
-                              end
-                        end
-                      else
-                        when colon
-                          if (find c "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789")
-                            do (push c param)
-                          else
-                            do (setf colon nil)
-                            and if (char= prev #\:)
-                                  do (write-char prev s) (write-char c s)
-                                     (setf colon nil)
-                                else
-                                  do (write-char #\? s) (write-char c s)
-                                     (push (intern (format NIL "~:@(~{~A~}~)" (nreverse param)) "KEYWORD") params)
-                                     (setf param nil)
-                                end
-                          end
-                        end
-                        and when quoted
-                              do (write-char c s)
-                              and if (char= c #\')
-                                    if (char= prev #\')
-                                      do (write-char #\' s)
-                                    else
-                                      do (setf quoted nil)
-                                    end
-                                  end
-                        end
-                      end
-                      do (setf prev c)
-                      finally (when colon
-                                    (write-char #\? s)
-                                     (push (intern (format NIL "~:@(~{~A~}~)" (nreverse param)) "KEYWORD") params))))))
-    `(:sql ,sql :keys ,(nreverse params))))

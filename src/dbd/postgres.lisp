@@ -49,49 +49,42 @@
    (%result :initarg :%result
             :initform nil)))
 
-(defmethod prepare ((conn <dbd-postgres-connection>) (sql string) &key named-param)
+(defmethod prepare ((conn <dbd-postgres-connection>) (sql string) &key)
   ;; Deallocate used prepared statements here,
   ;; because GC finalizer may run during processing another query and fail.
-  (let* ((sql-obj (when named-param (parameterized-sql-parse sql)))
-         (sql (if named-param
-                  (getf sql-obj :sql)
-                  sql))
-         (params (when named-param (getf sql-obj :keys))))
-    (loop for prepared = (pop (slot-value conn '%deallocation-queue))
-          while prepared
-          do (unprepare-query (connection-handle conn) prepared))
-    (let ((name (symbol-name (gensym "PREPARED-STATEMENT"))))
-      (setf sql
-            (with-output-to-string (s)
-              (loop with i = 0
-                    with escaped = nil
-                    for c across sql
-                    if (and (char= c #\\) (not escaped))
-                      do (setf escaped t)
-                    else do (setf escaped nil)
-                    if (and (char= c #\?) (not escaped))
-                      do (format s "$~D" (incf i))
-                    else do (write-char c s))))
-      (handler-case
-          (let* ((conn-handle (connection-handle conn))
-                 (query (make-instance '<dbd-postgres-query>
-                                       :connection conn
-                                       :name name
-                                       :prepared (prepare-query conn-handle name sql)
-                                       :named-param named-param
-                                       :params params)))
-            (finalize query
-                      (lambda ()
-                        (when (database-open-p conn-handle)
-                          (push name (slot-value conn '%deallocation-queue))))))
-        (syntax-error-or-access-violation (e)
-          (error '<dbi-programming-error>
-                 :message (database-error-message e)
-                 :error-code (database-error-code e)))
-        (database-error (e)
-          (error '<dbi-database-error>
-                 :message (database-error-message e)
-                 :error-code (database-error-code e)))))))
+  (loop for prepared = (pop (slot-value conn '%deallocation-queue))
+        while prepared
+        do (unprepare-query (connection-handle conn) prepared))
+  (let ((name (symbol-name (gensym "PREPARED-STATEMENT"))))
+    (setf sql
+          (with-output-to-string (s)
+            (loop with i = 0
+                  with escaped = nil
+                  for c across sql
+                  if (and (char= c #\\) (not escaped))
+                    do (setf escaped t)
+                  else do (setf escaped nil)
+                  if (and (char= c #\?) (not escaped))
+                    do (format s "$~D" (incf i))
+                  else do (write-char c s))))
+    (handler-case
+        (let* ((conn-handle (connection-handle conn))
+               (query (make-instance '<dbd-postgres-query>
+                                     :connection conn
+                                     :name name
+                                     :prepared (prepare-query conn-handle name sql))))
+          (finalize query
+                    (lambda ()
+                      (when (database-open-p conn-handle)
+                        (push name (slot-value conn '%deallocation-queue))))))
+      (syntax-error-or-access-violation (e)
+        (error '<dbi-programming-error>
+               :message (database-error-message e)
+               :error-code (database-error-code e)))
+      (database-error (e)
+        (error '<dbi-database-error>
+               :message (database-error-message e)
+               :error-code (database-error-code e))))))
 
 (defmethod execute-using-connection ((conn <dbd-postgres-connection>) (query <dbd-postgres-query>) params)
   (handler-case

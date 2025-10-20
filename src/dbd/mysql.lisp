@@ -61,8 +61,8 @@
       (pop (slot-value result 'result-set))
       (cl-mysql:next-row result)))
 
-(defmethod prepare ((conn <dbd-mysql-connection>) (sql string) &key (store T) named-param)
-  (let ((query (call-next-method conn sql :query-class '<dbd-mysql-query> :named-param named-param)))
+(defmethod prepare ((conn <dbd-mysql-connection>) (sql string) &key (store T))
+  (let ((query (call-next-method conn sql :query-class '<dbd-mysql-query>)))
     (setf (mysql-use-store query) store)
     query))
 
