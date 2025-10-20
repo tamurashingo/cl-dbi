@@ -1,21 +1,19 @@
-(in-package :cl-user)
-(defpackage dbd.mysql.error
-  (:use :cl)
-  (:import-from :dbi.error
-                :<dbi-programming-error>
-                :<dbi-database-error>)
-  (:import-from :dbi.driver
-                :connection-handle)
-  (:import-from :cl-mysql-system
-                :mysql-error
-                :mysql-error-errno
-                :mysql-error-message
-                :release
-                :connections
-                :in-use))
-(in-package :dbd.mysql.error)
-
-(cl-syntax:use-syntax :annot)
+(defpackage #:dbd.mysql.error
+  (:use #:cl)
+  (:import-from #:dbi.error
+                #:dbi-programming-error
+                #:dbi-database-error)
+  (:import-from #:dbi.driver
+                #:connection-handle)
+  (:import-from #:cl-mysql-system
+                #:mysql-error
+                #:mysql-error-errno
+                #:mysql-error-message
+                #:release
+                #:connections
+                #:in-use)
+  (:export #:with-error-handler))
+(in-package #:dbd.mysql.error)
 
 (defparameter *mysql-programming-error-code*
   (list 1044 ;; ER_DBACCESS_DENIED_ERROR
@@ -105,7 +103,6 @@
         1286 ;; ER_UNKNOWN_STORAGE_ENGINE
         ))
 
-@export
 (defmacro with-error-handler (conn &body body)
   `(handler-case (progn ,@body)
      (mysql-error (e)
@@ -113,8 +110,8 @@
             (error (if (member (mysql-error-errno e)
                                *mysql-programming-error-code*
                                :test #'eql)
-                       '<dbi-programming-error>
-                       '<dbi-database-error>)
+                       'dbi-programming-error
+                       'dbi-database-error)
                    :message (mysql-error-message e)
                    :error-code (mysql-error-errno e))
          ;; KLUDGE: I think this should be done in cl-mysql.

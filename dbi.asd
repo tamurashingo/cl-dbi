@@ -1,44 +1,58 @@
-#|
-  This file is a part of CL-DBI project.
-  Copyright (c) 2011 Eitaro Fukamachi (e.arrows@gmail.com)
-|#
-
-#|
-  Database independent interface for Common Lisp
-
-  Author: Eitaro Fukamachi (e.arrows@gmail.com)
-|#
-
-(in-package :cl-user)
-(defpackage dbi-asd
-  (:use :cl :asdf))
-(in-package :dbi-asd)
-
-(defsystem dbi
-  :version "0.1"
+(defsystem "dbi"
+  :version "0.11.1"
   :author "Eitaro Fukamachi"
-  :license "LLGPL"
-  :depends-on (:cl-syntax
-               :cl-syntax-annot
-               :split-sequence
-               :closer-mop
-               :bordeaux-threads)
+  :license "BSD 2-Clause"
+  :depends-on ("split-sequence"
+               "closer-mop"
+               "cl-ppcre"
+               (:feature #1=(:or :abcl
+                                 (:and :allegro :multiprocessing)
+                                 (:and :clasp :threads)
+                                 (:and :clisp :mt)
+                                 (:and :ccl :openmcl-native-threads)
+                                 (:and :cmu :mp)
+                                 :corman
+                                 (:and :ecl :threads)
+                                 :mkcl
+                                 :lispworks
+                                 (:and :sbcl :sb-thread)
+                                 :scl)
+                         "bordeaux-threads"))
   :components ((:module "src"
+                :depends-on ("src/utils")
                 :components
-                ((:file "dbi" :depends-on ("driver"))
+                ((:file "dbi" :depends-on ("driver" "cache" "logger"))
                  (:file "driver" :depends-on ("error"))
-                 (:file "error"))))
+                 (:module "cache"
+                  :components
+                  ((:file "thread" :if-feature #1#)
+                   (:file "single" :if-feature (:not #1#))))
+                 (:file "logger")
+                 (:file "error")))
+               (:file "src/utils"))
   :description "Database independent interface for Common Lisp"
-  :long-description
-  #.(with-open-file (stream (merge-pathnames
-                             #p"README.markdown"
-                             (or *load-pathname* *compile-file-pathname*))
-                            :if-does-not-exist nil
-                            :direction :input)
-      (when stream
-        (let ((seq (make-array (file-length stream)
-                               :element-type 'character
-                               :fill-pointer t)))
-          (setf (fill-pointer seq) (read-sequence seq stream))
-          seq)))
-  :in-order-to ((test-op (test-op dbi-test))))
+  :in-order-to ((test-op (test-op "dbi/test"))))
+
+(defsystem "dbi/test"
+  :depends-on ("dbi"
+               "dbi-test"
+               "dbd-sqlite3"
+               "dbd-mysql"
+               "dbd-postgres"
+               "dbd-null"
+               "rove"
+               "closer-mop"
+               "alexandria"
+               "trivial-types")
+  :components ((:module "tests"
+                :pathname "t"
+                :components
+                ((:file "driver")
+                 (:module "dbd"
+                  :components
+                  ((:file "sqlite3")
+                   (:file "postgres")
+                   (:file "mysql")
+                   (:file "null")))
+                 (:file "dbi"))))
+  :perform (test-op (op c) (symbol-call '#:rove '#:run c)))

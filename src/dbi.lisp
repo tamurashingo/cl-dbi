@@ -1,67 +1,16 @@
-(in-package :cl-user)
-(defpackage dbi
-  (:use :cl
-        :dbi.error)
-  (:nicknames :cl-dbi)
-  (:import-from :dbi.driver
-                :list-all-drivers
-                :find-driver
-                :connection-driver-type
-                :connection-database-name
-                :make-connection
-                :disconnect
-                :prepare
-                :execute
-                :fetch
-                :fetch-all
-                :do-sql
-                :begin-transaction
-                :commit
-                :rollback
-                :savepoint
-                :rollback-savepoint
-                :release-savepoint
-                :*current-savepoint*
-                :ping
-                :row-count)
-  (:import-from :bordeaux-threads
-                :current-thread
-                :thread-alive-p)
-  (:export :list-all-drivers
-           :find-driver
-           :connection-driver-type
-           :connection-database-name
-           :disconnect
-           :prepare
-           :execute
-           :fetch
-           :fetch-all
-           :do-sql
-           :begin-transaction
-           :commit
-           :rollback
-           :savepoint
-           :rollback-savepoint
-           :release-savepoint
-           :ping
-           :row-count
+(uiop:define-package #:dbi
+  (:nicknames #:cl-dbi)
+  (:use #:cl
+        #:dbi.cache)
+  (:use-reexport #:dbi.error
+                 #:dbi.driver
+                 #:dbi.logger)
+  (:export #:connect
+           #:connect-cached
+           #:disconnect-cached-all
+           #:with-connection))
+(in-package #:dbi)
 
-           :<dbi-error>
-           :<dbi-warning>
-           :<dbi-interface-error>
-           :<dbi-unimplemented-error>
-           :<dbi-database-error>
-           :<dbi-data-error>
-           :<dbi-operational-error>
-           :<dbi-integrity-error>
-           :<dbi-internal-error>
-           :<dbi-programming-error>
-           :<dbi-notsupported-error>))
-(in-package :dbi)
-
-(cl-syntax:use-syntax :annot)
-
-@export
 (defun connect (driver-name &rest params &key database-name &allow-other-keys)
   "Open a connection to the database which corresponds to `driver-name`."
   (declare (ignore database-name))
@@ -77,100 +26,56 @@
 
     (apply #'make-connection (make-instance driver) params)))
 
-(defun make-connection-pool ()
-  (make-hash-table :test 'equal))
+(defvar *threads-connection-pool* (make-cache-pool :cleanup-fn #'disconnect))
 
-#+thread-support
-(defun make-threads-connection-pool ()
-  (let ((pool (make-hash-table :test 'eq)))
-    (setf (gethash (bt:current-thread) pool) (make-connection-pool))
-    pool))
-#-thread-support
-(defun make-threads-connection-pool ()
-  (make-connection-pool))
+(defparameter *connection-cache-seconds*
+  (* 60 60 24 internal-time-units-per-second))
 
-(defvar *threads-connection-pool* (make-threads-connection-pool))
-
-(defun get-connection-pool ()
-  (or (gethash (bt:current-thread) *threads-connection-pool*)
-      (setf (gethash (bt:current-thread) *threads-connection-pool*)
-            (make-connection-pool))))
-
-@export
 (defun connect-cached (&rest connect-args)
-  (let* ((pool (get-connection-pool))
-         (conn (gethash connect-args pool)))
-    (cond
-      ((null conn)
-       (cleanup-connection-pool)
-       (setf (gethash connect-args pool)
-             (apply #'connect connect-args)))
-      ((not (ping conn))
-       (disconnect conn)
-       (remhash connect-args pool)
-       (cleanup-connection-pool)
-       (setf (gethash connect-args pool)
-             (apply #'connect connect-args)))
-      (t conn))))
+  (let* ((pool *threads-connection-pool*)
+         (conn (get-object pool connect-args)))
+    (if (and conn
+             (ping conn))
+        (progn
+          (when (< (+ (connection-established-at conn) *connection-cache-seconds*)
+                   (get-internal-real-time))
+            (disconnect conn)
+            (setf conn (apply #'connect connect-args))
+            (setf (get-object pool connect-args) conn))
+          conn)
+        (prog1
+            (setf (get-object pool connect-args)
+                  (apply #'connect connect-args))
+          (cleanup-cache-pool pool)))))
 
-(defun cleanup-connection-pool ()
-  (maphash (lambda (thread pool)
-             (unless (bt:thread-alive-p thread)
-               (maphash (lambda (args conn)
-                          (declare (ignore args))
-                          (disconnect conn))
-                        pool)
-               (remhash thread *threads-connection-pool*)))
-           *threads-connection-pool*))
+(defun disconnect-cached-all ()
+  (let ((pool *threads-connection-pool*))
+    (cleanup-cache-pool pool :force t))
+  (values))
+
+(defmacro with-autoload-on-missing (&body body)
+  (let ((retrying (gensym))
+        (e (gensym)))
+    `(let ((,retrying (make-hash-table :test 'equal)))
+       (handler-bind ((asdf:missing-component
+                        (lambda (,e)
+                          (unless (gethash (asdf::missing-requires ,e) ,retrying)
+                            (setf (gethash (asdf::missing-requires ,e) ,retrying) t)
+                            (when (find :quicklisp *features*)
+                              (uiop:symbol-call '#:ql-dist '#:ensure-installed
+                                                (uiop:symbol-call '#:ql-dist '#:find-system
+                                                                  (asdf::missing-requires ,e)))
+                              (invoke-restart (find-restart 'asdf:retry ,e)))))))
+         ,@body))))
 
 (defun load-driver (driver-name)
   (let ((driver-system (intern (format nil "DBD-~A" driver-name) :keyword)))
-    #+quicklisp (ql:quickload driver-system :verbose nil :silent t)
-    #-quicklisp
-    (asdf:load-system driver-system :verbose nil)))
+    (with-autoload-on-missing
+      (let ((*standard-output* (make-broadcast-stream))
+            (*error-output* (make-broadcast-stream)))
+        (asdf:load-system driver-system :verbose nil)))))
 
-(defun generate-random-savepoint ()
-  (format nil "savepoint_~36R" (random (expt 36 #-gcl 8 #+gcl 5))))
 
-@export
-(defmacro with-savepoint (conn &body body)
-  (let ((ok (gensym "SAVEPOINT-OK"))
-        (conn-var (gensym "CONN-VAR")))
-    `(let* (,ok
-            (,conn-var ,conn)
-            (*current-savepoint* (generate-random-savepoint)))
-       (savepoint ,conn-var *current-savepoint*)
-       (unwind-protect (multiple-value-prog1
-                           (progn ,@body)
-                         (setf ,ok t))
-         (if ,ok
-             (release-savepoint ,conn-var)
-             (rollback-savepoint ,conn-var))))))
-
-(defvar *in-transaction* nil)
-
-(defmacro %with-transaction (conn &body body)
-  (let ((ok (gensym "TRANSACTION-OK"))
-        (conn-var (gensym "CONN-VAR")))
-    `(let (,ok
-           (,conn-var ,conn)
-           (*in-transaction* t))
-       (begin-transaction ,conn-var)
-       (unwind-protect (multiple-value-prog1
-                         (progn ,@body)
-                         (setf ,ok t))
-         (if ,ok
-             (commit ,conn-var)
-             (rollback ,conn-var))))))
-
-@export
-(defmacro with-transaction (conn &body body)
-  "Start a transaction and commit at the end of this block. If the evaluation `body` is interrupted, the transaction is rolled back automatically."
-  `(if *in-transaction*
-       (with-savepoint ,conn ,@body)
-       (%with-transaction ,conn ,@body)))
-
-@export
 (defmacro with-connection ((conn-sym &rest rest) &body body)
   `(let ((,conn-sym (connect ,@rest)))
      (unwind-protect
